@@ -1,0 +1,215 @@
+<?php
+
+/**
+ * @file
+ * Module file for the GDPR Clear SQL Dump module.
+ */
+
+/**
+ * Implements hook_form_ID_alter().
+ */
+function gdpr_backup_cleaner_form_gdpr_task_edit_gdpr_remove_form_alter(&$form, $form_state, $form_id) {
+  list($files, $fetch_time, $remote) = backup_migrate_get_saved_backups();
+
+  $headers = array(
+    array('data' => t('Filename'), 'field' => 'filename'),
+    array('data' => t('Created'), 'field' => 'filetime', 'sort' => 'desc'),
+    array('data' => t('Size'), 'field' => 'filesize'),
+  );
+  $options = $meta_data = array();
+
+  foreach ($files as $file) {
+    $info = $file->file_info;
+    $info['filetime'] = !empty($info['datestamp']) ? $info['datestamp'] : $info['filetime'];
+    $options[$info['file_id']] = array(
+      check_plain($info['filename']),
+      t('!time ago', array('!time' => format_interval(time() - $info['filetime'], 2))) . '<div class="backup-migrate-date">' . format_date($info['filetime'], 'small') . '</div>',
+      format_size($info['filesize']),
+    );
+    $meta_data[$info['file_id']] = array(
+      'destination_id' => $info['destination_id'],
+      'filename' => $file->name,
+    );
+  }
+  $form['gdpr_backup_cleaner_file_list'] = array(
+    '#type' => 'tableselect',
+    '#header' => $headers,
+    '#options' => $options,
+    '#empty' => t('No backups available.'),
+    '#weight' => '50',
+  );
+  $form['gdpr_backup_cleaner_file_meta_data'] = array(
+    '#type' => 'value',
+    '#value' => $meta_data,
+  );
+  $form['#submit'][] = 'gdpr_backup_cleaner_remove_form_submit';
+}
+
+/**
+ * @param $form
+ * @param $form_state
+ */
+function gdpr_backup_cleaner_remove_form_submit($form, $form_state) {
+  $task = $form_state['task'];
+
+  // Create operations array.
+  $operations = array();
+
+  foreach ($form_state['values']['gdpr_backup_cleaner_file_list'] as $file_id => $item) {
+    if ($item) {
+      $destination_id = $form_state['values']['gdpr_backup_cleaner_file_meta_data'][$file_id]['destination_id'];
+      $filename = $form_state['values']['gdpr_backup_cleaner_file_meta_data'][$file_id]['filename'];
+      $operations[] = array(
+        'gdpr_backup_cleaner_batch', array(
+          array(
+            'file_id' => $file_id,
+            'filename' => $filename,
+            'destination_id' => $destination_id,
+            'task' => $task,
+          ),
+        ),
+      );
+    }
+  }
+
+  // Start иatch of backup clearing.
+  $batch = array(
+    'operations' => $operations,
+    'init_message' => t('Starting.'),
+    'progress_message' => t('Processed @current out of @total.'),
+  );
+
+  // Set the batch operation.
+  batch_set($batch);
+  batch_process();
+}
+
+function gdpr_backup_cleaner_batch($result) {
+  backup_migrate_include('destinations');
+  $destination_id = $result['destination_id'];
+  $file_id = $result['file_id'];
+  $filename = $result['filename'];
+  $task = $result['task'];
+  $anonymizer = new Anonymizer();
+  $gdpr_backup_cleaner_database = variable_get('gdpr_backup_cleaner', 'gdpr_backup_cleaner');
+  $source_id = "db:{$gdpr_backup_cleaner_database}:default";
+  $destination = backup_migrate_get_destination($destination_id);
+  if ($destination) {
+    backup_migrate_perform_restore($destination_id, $file_id, ['source_id' => $source_id]);
+
+    db_set_active($gdpr_backup_cleaner_database);
+    if (user_load($task->user_id, TRUE)) {
+      $errors = $anonymizer->run($task);
+      if (!empty($errors)) {
+        // @todo clear log message.
+        watchdog('gdpr_backup_cleaner', $errors);
+        db_set_active();
+        return;
+      }
+      // @todo write success message.
+      watchdog('gdpr_backup_cleaner', 'Task has been processed for backup @file_name', array(
+        '@file_name' => $file_id,
+      ), WATCHDOG_INFO);
+      drupal_set_message(t('Task has been processed for backup @file_name', array(
+        '@file_name' => $file_id,
+      )), 'status');
+    }
+    else {
+      watchdog('gdpr_backup_cleaner', 'Task has not been processed for backup @file_name. There is no user with id @id', array(
+        '@id' => $task->user_id,
+        '@file_name' => $file_id,
+      ), WATCHDOG_WARNING);
+      drupal_set_message(t('Task has not been processed for backup @file_name. There is no user with id @id', array(
+        '@id' => $task->user_id,
+        '@file_name' => $file_id,
+      )), 'warning');
+      db_set_active();
+      return;
+    }
+    db_set_active();
+
+    $settings = backup_migrate_get_profile('default');
+    $settings->destinations = array($destination);
+    $settings->source_id = $source_id;
+    $settings->filename = $filename;
+    // Replace existing file with new one.
+    $settings->append_timestamp = 2;
+
+    // Create a new backup with old name.
+    $file = gdpr_backup_cleaner_perform_backup($settings);
+
+    // If ok.
+    if ($file) {
+      // do smth...
+    }
+  }
+}
+
+/**
+ * Perform a backup with the given settings.
+ */
+function gdpr_backup_cleaner_perform_backup(&$settings) {
+  backup_migrate_include('destinations', 'files', 'filters');
+  timer_start('backup_migrate_backup');
+
+  // If not in 'safe mode', increase the maximum execution time:
+  if (!ini_get('safe_mode') && ini_get('max_execution_time') < variable_get('backup_migrate_backup_max_time', 1200)) {
+    drupal_set_time_limit(variable_get('backup_migrate_backup_max_time', 1200));
+  }
+
+  // Confirm the destinations are valid
+  $valid = backup_migrate_destination_confirm_destination($settings);
+  if (!$valid) {
+    backup_migrate_backup_fail("Could not run backup because a there was no valid destination to save to.", array(), $settings);
+    return FALSE;
+  }
+
+  // There is a diff between original function, we should keep old name of the file.
+  $filename = $settings->filename;
+
+  // Create the temporary file object to be backed up into.
+  $file = new backup_file(array('filename' => $filename));
+  if (!$file) {
+    backup_migrate_backup_fail("Could not run backup because a temporary file could not be created.", array(), $settings);
+    return FALSE;
+  }
+
+  // Register shutdown callback to deal with timeouts.
+  register_shutdown_function('backup_migrate_shutdown', $settings);
+
+  $file = backup_migrate_filters_backup($file, $settings);
+  if (!$file) {
+    if (_backup_migrate_check_timeout()) {
+      backup_migrate_backup_fail('Could not complete the backup because the script timed out. Try increasing your PHP <a href="!url">max_execution_time setting</a>.', array('!url' => 'http://www.php.net/manual/en/info.configuration.php#ini.max-execution-time'), $settings);
+    }
+    else {
+      backup_migrate_backup_fail("Could not complete the backup.", array(), $settings);
+    }
+    return FALSE;
+  }
+
+  $file = backup_migrate_destination_save_file($file, $settings);
+  if (!$file) {
+    backup_migrate_backup_fail("Could not run backup because the file could not be saved to the destination.", array(), $settings);
+    return FALSE;
+  }
+
+  // Backup succeeded,
+  $time = timer_stop('backup_migrate_backup');
+  $message = '%source backed up successfully to %file (%size) in destination %dest in !time. !action';
+  $params = array(
+    '%file' => $filename,
+    '%dest' => $settings->get_destination_name(),
+    '%source' => $settings->get_source_name(),
+    '%size' => format_size($file->filesize()),
+    '!time' => backup_migrate_format_elapsed_time($time['time']),
+    '!action' => !empty($settings->performed_action) ? $settings->performed_action : '',
+  );
+  if (($destination = $settings->get_destination()) && ($links = $destination->get_file_links($file->file_id()))) {
+    $params['!links'] = implode(", ", $links);
+  }
+
+  backup_migrate_backup_succeed($message, $params, $settings);
+
+  return $file;
+}

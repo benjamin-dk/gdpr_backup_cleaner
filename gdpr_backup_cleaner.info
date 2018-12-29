@@ -1,0 +1,8 @@
+name = General Data Protection Regulation (GDPR) - Clear SQL Dump
+description = Provides a functionality to clean existing sql dumps
+core = 7.x
+package = General Data Protection Regulation
+
+dependencies[] = gdpr
+dependencies[] = gdpr_tasks
+dependencies[] = backup_migrate
