@@ -1,6 +1,6 @@
 Install:
 
-- With Drush: drush en gdpr_backup_cleaner -y
+- With Drush: `drush en gdpr_backup_cleaner -y`
 
 Requirements:
 
@@ -9,6 +9,7 @@ Requirements:
 
 After installation, create new database and modify settings.php file by adding info about your new database
 
+````
 $conf['gdpr_backup_cleaner'] = 'gdpr';
 
 $databases['default']['default'] = array(
@@ -29,6 +30,5 @@ $databases[$conf['gdpr_backup_cleaner']]['default'] = array(
   'driver' => 'mysql',
   'prefix' => '',
 );
-
-Important! This module is integrated with "backup and migrate" projects, that's why we have some restrictions regarding making and 
-restoring backups. This module only works with backups, created via "backup and migrate" project.
+````
+Important! This module is integrated with the "backup and migrate" project, that's why we have some restrictions regarding making and restoring backups. This module only works with backups created via the "backup and migrate" project.
