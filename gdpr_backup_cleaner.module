@@ -72,7 +72,7 @@ function gdpr_backup_cleaner_remove_form_submit($form, $form_state) {
     }
   }
 
-  // Start иatch of backup clearing.
+  // Start batch of backup clearing.
   $batch = array(
     'operations' => $operations,
     'init_message' => t('Starting.'),
@@ -91,7 +91,17 @@ function gdpr_backup_cleaner_batch($result) {
   $filename = $result['filename'];
   $task = $result['task'];
   $anonymizer = new Anonymizer();
-  $gdpr_backup_cleaner_database = variable_get('gdpr_backup_cleaner', 'gdpr_backup_cleaner');
+  $gdpr_backup_cleaner_database = variable_get('gdpr_backup_cleaner', '');
+  // No extra database defined for the cleaning task
+  if (empty($gdpr_backup_cleaner_database)) {
+    watchdog('gdpr_backup_cleaner', 'Backup cleaning task has not been processed for backup @file_name. There is no extra database defined in settings.php.', array(
+      '@file_name' => $file_id,
+    ), WATCHDOG_WARNING);
+    drupal_set_message(t('Backup cleaning task has not been processed for backup @file_name. There is no extra database defined in settings.php.', array(
+      '@file_name' => $file_id,
+    )), 'warning');
+    return;
+  }
   $source_id = "db:{$gdpr_backup_cleaner_database}:default";
   $destination = backup_migrate_get_destination($destination_id);
   if ($destination) {
@@ -107,19 +117,19 @@ function gdpr_backup_cleaner_batch($result) {
         return;
       }
       // @todo write success message.
-      watchdog('gdpr_backup_cleaner', 'Task has been processed for backup @file_name', array(
+      watchdog('gdpr_backup_cleaner', 'Backup cleaning task has been processed for backup @file_name', array(
         '@file_name' => $file_id,
       ), WATCHDOG_INFO);
-      drupal_set_message(t('Task has been processed for backup @file_name', array(
+      drupal_set_message(t('Backup cleaning task been processed for backup @file_name', array(
         '@file_name' => $file_id,
       )), 'status');
     }
     else {
-      watchdog('gdpr_backup_cleaner', 'Task has not been processed for backup @file_name. There is no user with id @id', array(
+      watchdog('gdpr_backup_cleaner', 'Backup cleaning task has not been processed for backup @file_name. There is no user with id @id', array(
         '@id' => $task->user_id,
         '@file_name' => $file_id,
       ), WATCHDOG_WARNING);
-      drupal_set_message(t('Task has not been processed for backup @file_name. There is no user with id @id', array(
+      drupal_set_message(t('Backup cleaning task has not been processed for backup @file_name. There is no user with id @id', array(
         '@id' => $task->user_id,
         '@file_name' => $file_id,
       )), 'warning');
